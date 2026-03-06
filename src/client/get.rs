@@ -215,6 +215,13 @@ impl<T: GetClient> GetContext<T> {
                         },
                         // Retry all response body errors
                         (Err(e), Some(etag)) if !ctx.retry_ctx.exhausted() => {
+                            // All bytes already received, no need to retry.
+                            // This can happen if the last chunk in the stream
+                            // wasn't received.
+                            if range.start >= range.end {
+                                return Ok(None);
+                            }
+
                             let sleep = ctx.retry_ctx.backoff();
                             info!(
                                 "Encountered error while reading response body: {}. Retrying in {}s",
@@ -771,5 +778,20 @@ mod http_tests {
             err.to_string(),
             "Generic HTTP error: HTTP error: request or response body error"
         );
+
+        // Should succeed when all bytes received before stream error.
+        mock.push(
+            Response::builder()
+                .header(CONTENT_LENGTH, 6)
+                .header(ETAG, "all-bytes")
+                .body(Chunked::new(vec![
+                    Ok(Bytes::from_static(b"foobar")),
+                    Err(()),
+                ]))
+                .unwrap(),
+        );
+
+        let ret = store.get(&path).await.unwrap().bytes().await.unwrap();
+        assert_eq!(ret.as_ref(), b"foobar");
     }
 }
